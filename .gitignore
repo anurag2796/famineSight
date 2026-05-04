@@ -70,3 +70,4 @@ htmlcov/
 .dmypy.json
 dmypy.json
 CLAUDE.md
+report/

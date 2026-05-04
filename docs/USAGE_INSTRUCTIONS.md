@@ -2,246 +2,256 @@
 
 ## System Overview
 
-FamineSight is a humanitarian data mining system designed to predict hunger-related mortality in Somalia. It integrates multiple data sources and employs advanced analytics to provide early warning capabilities.
+FamineSight is a humanitarian data mining system designed to predict hunger-related mortality in Somalia. It integrates nine data sources and employs unsupervised analytics, supervised machine learning, and LLM-based narrative generation to provide early warning capabilities for humanitarian response teams.
 
 ## System Architecture
 
 ```
-FamineSight/
-├── src/                      # Source code
-│   ├── data/                 # Data fetching and preprocessing
-│   ├── analysis/             # Analytical modules
-│   ├── llm/                  # LLM integration (Ollama + Groq)
-│   └── config.py             # Configuration management
+famineSight/
+├── src/                      # Core source code
+│   ├── config.py             # Centralized configuration
+│   ├── data/                 # Data fetching & preprocessing
+│   │   ├── acled_fetcher.py
+│   │   ├── chirps_fetcher.py
+│   │   ├── fsnau_fetcher.py
+│   │   ├── ipc_fetcher.py
+│   │   ├── ndvi_fetcher.py
+│   │   ├── preprocessor.py
+│   │   ├── shapefile_fetcher.py
+│   │   ├── unhcr_fetcher.py
+│   │   └── wfp_fetcher.py
+│   ├── analysis/             # ML & analytics modules
+│   │   ├── anomaly.py
+│   │   ├── association.py
+│   │   ├── classification.py
+│   │   ├── clustering.py
+│   │   ├── extra_models.py
+│   │   └── viz_payload.py
+│   └── llm/                  # LLM integration
+│       ├── client.py         # Hybrid Ollama/Groq client
+│       ├── groq_client.py
+│       ├── guardrails.py
+│       └── prompts.py
 ├── backend/                  # FastAPI backend
-├── frontend/                 # Streamlit frontend
-└── data/                     # Data storage
-    ├── raw/                  # Raw data files
-    └── processed/            # Processed data files
+│   ├── main.py               # App entry point
+│   ├── security.py           # API key auth
+│   ├── routers/
+│   ├── schemas/
+│   └── services/
+├── frontend/
+│   └── app.py                # Streamlit dashboard
+└── data/
+    ├── raw/                  # Downloaded raw data files
+    └── processed/            # Pipeline output
 ```
 
 ## Configuration
 
-### Environment Variables (.env file)
+### Environment Variables (`.env` file)
 
 ```bash
-# ACLED API credentials
+# ─── ACLED Credentials ─────────────────────────────────────────────────────
 ACLED_EMAIL=your_email@organization.org
-ACLED_PASSWORD=your_secure_password
+ACLED_PASSWORD=your_acled_password
 
-# LLM Configuration
+# ─── LLM Configuration ─────────────────────────────────────────────────────
+# Ollama runs on the host; accessible inside Docker via host.docker.internal
 OLLAMA_HOST=http://host.docker.internal:11434
-OLLAMA_MODEL=mistral:7b
-GROQ_API_KEY=your_groq_api_key_here     # Optional - for development
-GROQ_MODEL=llama3-8b-8192               # Optional - for development
+OLLAMA_MODEL=qwen3:32b
 
-# System settings
+# Groq (optional cloud fallback — leave empty to use Ollama only)
+GROQ_API_KEY=
+GROQ_MODEL=llama3-8b-8192
+
+# ─── API Security ───────────────────────────────────────────────────────────
+# Generate with: python -c "import secrets; print(secrets.token_hex(32))"
+API_KEY=replace_with_a_strong_random_key
+
+# ─── Service URLs ───────────────────────────────────────────────────────────
+BACKEND_URL=http://backend:8000
+ALLOWED_ORIGINS=http://localhost:8501,http://127.0.0.1:8501,http://frontend:8501
+
+# ─── Hardware Tuning ────────────────────────────────────────────────────────
 RF_N_JOBS=4
 XGB_DEVICE=cpu
-BACKEND_URL=http://backend:8000
 ```
+
+> **Required:** `API_KEY` must be set. All API endpoints require the `X-API-Key` header.
 
 ## Running the System
 
-### 1. Development Mode (with smaller LLM)
+### Option 1: Docker Compose (Recommended)
 
 ```bash
-# Set up environment with development model
-echo "OLLAMA_MODEL=mistral:7b" >> .env
+# Development mode (includes Ollama sidecar, ~4 GB backend memory)
+docker compose -f docker-compose.dev.yml up --build
 
-# Start the system
-docker compose up -d
-
-# Test the system
-curl -s http://localhost:8000/health
+# Verify the backend is healthy
+curl -H "X-API-Key: your_api_key" http://localhost:8000/health
 ```
 
-### 2. Production Mode (with full model)
+### Option 2: Local Development (without Docker)
 
 ```bash
-# Set up environment with production model
-echo "OLLAMA_MODEL=qwen3:32b" >> .env
+# Install dependencies
+pip install -r backend/requirements.txt
+pip install -r frontend/requirements.txt
 
-# Start the system
-docker compose up -d
+# Start the backend
+uvicorn backend.main:app --reload
+
+# In a separate terminal, start the frontend
+streamlit run frontend/app.py
 ```
 
-### 3. Development with Groq (for testing)
+### LLM Configuration
 
-```bash
-# Set up environment with Groq
-echo "GROQ_API_KEY=your_groq_key_here" >> .env
-echo "GROQ_MODEL=llama3-8b-8192" >> .env
-
-# System will automatically use Groq for LLM operations when available
-```
+| Mode | Config | Description |
+|------|--------|-------------|
+| **Ollama only** (default) | `GROQ_API_KEY=` (empty) | Fully offline, requires Ollama running on host |
+| **Groq only** | `GROQ_API_KEY=your_key` | Cloud inference, faster for development |
+| **Hybrid** (recommended) | Both set | Uses Groq when available, falls back to Ollama |
 
 ## Data Pipeline
 
 ### Data Sources
-1. **ACLED Conflict Data**: Somalia conflict events (2010-2024)
-2. **WFP Food Prices**: Food price indices for Somalia  
-3. **CHIRPS Rainfall**: Climate data for Somalia
-4. **FSNAU Mortality**: Famine-related mortality data
-5. **IPC Phases**: Integrated Food Security Phase classification
+
+| Source | Data | Notes |
+|--------|------|-------|
+| ACLED | Conflict events, fatalities, civilian targeting | OAuth auth required |
+| WFP | Food price indices | Auto-fetched via HDX (no key needed) |
+| CHIRPS | Monthly rainfall (mm) | Auto-fetched via HDX |
+| NDVI | Vegetation health index | Auto-fetched via HDX |
+| UNHCR | IDP count, refugee count | Auto-fetched via API |
+| IPC | Food security phase percentages | Auto-fetched via IPC API |
+| FSNAU | Crude death rate, under-5 death rate | Supplementary / sparse |
+| OCHA COD-AB | Somalia district shapefiles & p-codes | Auto-fetched |
+
+### Running the Pipeline
+
+```bash
+# Fetch all data (real + synthetic fallback)
+python scripts/fetch_data.py
+
+# Force synthetic data (no credentials required)
+python scripts/fetch_data.py --synthetic
+
+# Train ML models on processed data
+python scripts/train_pipeline.py
+```
 
 ### Processing Steps
-1. **Data Fetching**: Real data or synthetic fallback
-2. **Preprocessing**: Merging, imputation, scaling
-3. **Feature Engineering**: Lag features, rolling statistics
-4. **Dimensionality Reduction**: PCA for efficient processing
-5. **Temporal Sorting**: Ensures chronological data flow
+
+1. **Data Fetching** — Real API data or synthetic fallback
+2. **Merging** — Join all sources on district × month
+3. **Imputation** — Forward-fill then median fill missing values
+4. **Outlier Clipping** — 1st–99th percentile clipping
+5. **Lag Feature Engineering** — 1-, 2-, 3-month lags for key indicators
+6. **Feature Scaling** — StandardScaler on training split
+7. **PCA** — Optional dimensionality reduction
+8. **Temporal Sorting** — Chronological train/validation/test split
 
 ## API Endpoints
 
+All endpoints require the `X-API-Key: <your_api_key>` header.
+
 ### Prediction
-- `POST /predict/mortality` - Predict mortality risk for a district
+- `POST /predict/mortality` — Predict crisis label and mortality risk for a district
 
 ### Analysis
-- `GET /analyze/rules` - Get association rules
-- `GET /analyze/clusters` - Get cluster profiles
+- `GET /analyze/rules` — Get association rules (FP-Growth / Apriori)
+- `GET /analyze/clusters` — Get K-Means district cluster profiles
 
 ### Anomaly Detection
-- `GET /anomaly/alerts` - Get anomaly alerts
+- `GET /anomaly/alerts` — Get anomaly alerts (Isolation Forest, LOF, Z-score)
 
 ### Narrative Generation
-- `POST /narrative/generate` - Generate AI situation report
+- `POST /narrative/generate` — Generate AI situation report (Ollama / Groq)
+
+### System
+- `GET /health` — Backend health check (model load status, Ollama availability)
 
 ## LLM Integration
 
 ### Hybrid Client Architecture
-The system uses a hybrid client that automatically chooses between:
-1. **Local Ollama** (primary - secure, offline)
-2. **Groq API** (secondary - for development/testing)
 
-### Usage Examples
+`src/llm/client.py` implements a `HybridClient` that:
+1. Prefers **local Ollama** (secure, offline, primary for production)
+2. Falls back to **Groq API** (cloud, faster, useful for development)
+3. Applies **guardrails** (`src/llm/guardrails.py`) to validate AI output before delivery
 
-#### Using Ollama (default)
+### Python Usage
+
 ```python
 from src.llm.client import hybrid_client
 
-# This will use Ollama when available
-async for chunk in hybrid_client.stream("Hello, how are you?"):
+# Async streaming (works with both Ollama and Groq)
+async for chunk in hybrid_client.stream("Summarize the crisis situation in Baidoa."):
     print(chunk, end="", flush=True)
-```
-
-#### Using Groq (when configured)
-```python
-# Set GROQ_API_KEY in .env
-# System will automatically use Groq when available
 ```
 
 ## Testing
 
-### Run System Tests
 ```bash
-# Test with synthetic data
-python test_integration_end_to_end.py
+# Run the full test suite
+pytest
 
-# Test LLM integration
-python test_groq_integration.py
-```
+# Run with coverage
+pytest --cov=src --cov=backend
 
-### Docker Testing
-```bash
-# Test with Docker
+# Docker integration test
 docker compose -f docker-compose.dev.yml up -d
+curl -H "X-API-Key: your_api_key" http://localhost:8000/health
 ```
 
 ## Production Deployment
 
 ### Prerequisites
-- Jetson AGX Orin with sufficient RAM (60+ GB)
-- Qwen3:32b LLM (via Ollama)
-- Docker and Docker Compose
-- ACLED API credentials
+- Python 3.11+, Docker & Docker Compose v2
+- ACLED credentials and a generated `API_KEY`
+- For Jetson AGX Orin: 60+ GB RAM, JetPack 6.x
 
-### Deployment Steps
-1. **Configure environment**
-   ```bash
-   echo "OLLAMA_MODEL=qwen3:32b" >> .env
-   ```
+### Steps
 
-2. **Build and start**
-   ```bash
-   docker compose build
-   docker compose up -d
-   ```
+```bash
+# 1. Configure environment
+cp .env.example .env
+# Edit .env: set ACLED_EMAIL, ACLED_PASSWORD, API_KEY, etc.
 
-3. **Verify deployment**
-   ```bash
-   curl -s http://localhost:8000/health
-   ```
+# 2. Fetch data and train models
+python scripts/fetch_data.py
+python scripts/train_pipeline.py
+
+# 3. Build and start services
+docker compose -f docker-compose.dev.yml build
+docker compose -f docker-compose.dev.yml up -d
+
+# 4. Verify
+curl -H "X-API-Key: $API_KEY" http://localhost:8000/health
+```
 
 ## Troubleshooting
 
-### Common Issues
+| Issue | Resolution |
+|-------|-----------|
+| `API_KEY environment variable is not set` | Generate and add `API_KEY=...` to `.env` |
+| ACLED `401 Unauthorized` | Check `ACLED_EMAIL` and `ACLED_PASSWORD` in `.env` |
+| LLM not responding | Verify Ollama is running: `ollama list` |
+| Memory OOM on Jetson | Ensure `RF_N_JOBS=4` and `XGB_DEVICE=cpu` in `.env` |
+| Docker build failure | Run `docker system prune -f` then rebuild with `--no-cache` |
 
-1. **ACLED Authentication**
-   ```bash
-   # Check credentials
-   grep ACLED .env
-   ```
-
-2. **LLM Connectivity**
-   ```bash
-   # Check Ollama availability
-   docker compose exec backend curl -s http://host.docker.internal:11434/api/tags
-   ```
-
-3. **Network Issues**
-   ```bash
-   # Test connectivity
-   ping acleddata.com
-   ```
-
-### Error Handling
-The system implements graceful fallback:
-- If ACLED API fails → uses synthetic data
-- If LLM fails → uses fallback mechanisms
-- All errors logged for monitoring
+### Fallback Behavior
+- If ACLED API fails → synthetic conflict data is used
+- If Groq API fails → Ollama is used for narrative generation
+- If Ollama is unavailable → narrative endpoint returns an error
 
 ## Security
 
-### Data Privacy
-- All processing done locally on Jetson
-- No external data transmission
-- Secure credential handling
-- Environment variable storage only
-
-### API Security
-- Credentials in `.env` file (600 permissions)
-- No hardcoded credentials
-- Secure token management
-
-## Performance Optimization
-
-### Jetson Constraints
-- `RF_N_JOBS=4` to prevent OOM
-- `XGB_DEVICE="cpu"` for ARM64 compatibility
-- Efficient memory usage
-- Proper Docker resource limits
-
-### Resource Monitoring
-```bash
-# Monitor system resources
-htop
-docker stats
-```
-
-## Future Enhancements
-
-### Planned Improvements
-1. **Enhanced Groq Integration** - Better error handling and fallback
-2. **Multi-model Support** - Support for multiple LLMs
-3. **Advanced Analytics** - Additional machine learning models
-4. **Cloud Integration** - Optional cloud-based processing
-5. **Mobile App** - Mobile interface for field workers
-
-## Support
-
-For support, please contact the development team or open an issue in the repository.
+- All credentials stored in `.env` (set permissions: `chmod 600 .env`)
+- All API endpoints protected by `X-API-Key` header authentication
+- No credentials hardcoded anywhere in source code
+- Groq is optional — production deployments should use Ollama for full offline operation
 
 ## License
 
-MIT License - see LICENSE file for details.
+This project is for humanitarian and academic purposes only. Unauthorized commercial use is strictly prohibited.

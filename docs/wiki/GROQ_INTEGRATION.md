@@ -2,289 +2,201 @@
 
 ## Overview
 
-This document outlines the approach for integrating Groq's free LLM API into the FamineSight system. Groq offers high-performance inference with competitive pricing and free access for development.
+FamineSight uses a **hybrid LLM architecture** that can leverage either a local Ollama instance (primary, production) or the Groq cloud API (optional, development/fallback). This document covers the Groq integration specifically.
 
-## Why Groq Integration?
+## Architecture
 
-### Benefits
-- **Performance**: Ultra-fast inference (1000+ tokens/sec)
-- **Cost-effective**: Free tier available for development
-- **Quality**: High-quality language models
-- **Scalability**: Cloud-based with automatic scaling
-
-### Limitations
-- **API Dependencies**: Requires internet connectivity
-- **Rate Limits**: Free tier has usage limits
-- **Data Privacy**: Cloud-based processing may raise concerns
-- **Authentication**: Requires API key management
-
-## Groq API Integration Approach
-
-### 1. API Structure
-Groq uses the OpenAI-compatible API structure:
-
-```python
-# Groq API endpoint
-https://api.groq.com/openai/v1/chat/completions
-
-# Required headers
-{
-    "Authorization": "Bearer YOUR_API_KEY",
-    "Content-Type": "application/json"
-}
-
-# Request format
-{
-    "model": "llama3-8b-8192",  # or other Groq models
-    "messages": [
-        {"role": "system", "content": "You are a helpful assistant"},
-        {"role": "user", "content": "Hello!"}
-    ],
-    "temperature": 0.7,
-    "max_tokens": 1000
-}
+```
+src/llm/client.py          ← HybridClient (primary interface)
+  ├── groq_client.py       ← Groq cloud API (OpenAI-compatible)
+  ├── guardrails.py        ← Output validation
+  └── prompts.py           ← Prompt templates
 ```
 
-### 2. Integration Strategy
+### Priority Order
 
-#### A. Hybrid Approach (Recommended)
-- **Primary**: Use local Ollama for production (Jetson constraints)
-- **Secondary**: Use Groq for development/testing
-- **Fallback**: Local model when Groq unavailable
+| Priority | Backend | Used When |
+|----------|---------|-----------|
+| 1st | **Groq** | `GROQ_API_KEY` is set and Groq is reachable |
+| 2nd | **Ollama** | Groq unavailable or key not set |
+| Error | — | Both unavailable |
 
-#### B. Environment-Based Switching
-```python
-# In src/llm/client.py
-import os
+## Why Groq?
 
-class GroqClient:
-    def __init__(self):
-        self.api_key = os.getenv("GROQ_API_KEY")
-        self.base_url = "https://api.groq.com/openai/v1"
-        
-    async def stream(self, prompt: str):
-        # Groq implementation using OpenAI-compatible API
-        pass
-```
+- **Speed** — Ultra-fast inference (>1000 tokens/sec on Groq hardware)
+- **Cost** — Free tier available for development
+- **OpenAI-compatible** — Same API shape as OpenAI, easy to integrate
+- **No local RAM required** — Useful when Ollama model (~20 GB) isn't available
 
-### 3. Implementation Steps
+**Limitations:**
+- Requires internet connectivity
+- Free tier has rate limits
+- Cloud processing — avoid sending sensitive humanitarian data in production
 
-#### Step 1: Environment Setup
+## Configuration
+
+### Environment Variables
+
 ```bash
-# Add to .env file
-GROQ_API_KEY=your_groq_api_key_here
-GROQ_MODEL=llama3-8b-8192
+# .env
+GROQ_API_KEY=your_groq_api_key_here   # Leave empty to disable Groq
+GROQ_MODEL=llama3-8b-8192             # Or: llama3-70b-8192, mixtral-8x7b-32768
 ```
 
-#### Step 2: Client Implementation
+Get a free API key at: https://console.groq.com/
+
+### Available Models
+
+| Model | Context | Speed | Best For |
+|-------|---------|-------|----------|
+| `llama3-8b-8192` | 8192 tokens | Fastest | Development, quick tests |
+| `llama3-70b-8192` | 8192 tokens | Fast | Higher quality responses |
+| `mixtral-8x7b-32768` | 32768 tokens | Fast | Long documents |
+| `llama-3.3-70b-versatile` | 128k tokens | Fast | Complex analysis |
+
+## Implementation
+
+### `src/llm/groq_client.py`
+
 ```python
-# src/llm/groq_client.py
-import httpx
-import json
-import asyncio
-from typing import AsyncGenerator
+# Groq API endpoint (OpenAI-compatible)
+BASE_URL = "https://api.groq.com/openai/v1"
 
 class GroqClient:
     def __init__(self, api_key: str, model: str = "llama3-8b-8192"):
         self.api_key = api_key
         self.model = model
-        self.base_url = "https://api.groq.com/openai/v1"
         self.client = httpx.AsyncClient(
-            base_url=self.base_url,
+            base_url=BASE_URL,
             headers={"Authorization": f"Bearer {api_key}"}
         )
 
     async def stream(self, prompt: str) -> AsyncGenerator[str, None]:
+        # SSE streaming over OpenAI /chat/completions
         payload = {
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
             "stream": True
         }
-        
-        async with self.client.stream("POST", "/chat/completions", json=payload) as response:
-            async for line in response.aiter_lines():
-                if line.strip() and line.startswith('data: '):
-                    data = line[6:]  # Remove 'data: ' prefix
-                    if data != '[DONE]':
-                        try:
-                            message = json.loads(data)
-                            content = message.get("choices", [{}])[0].get("delta", {}).get("content", "")
-                            if content:
-                                yield content
-                        except json.JSONDecodeError:
-                            continue
+        async with self.client.stream("POST", "/chat/completions", json=payload) as resp:
+            async for line in resp.aiter_lines():
+                if line.startswith("data: ") and line != "data: [DONE]":
+                    chunk = json.loads(line[6:])
+                    content = chunk["choices"][0]["delta"].get("content", "")
+                    if content:
+                        yield content
 ```
 
-#### Step 3: Model Selection
-Available Groq models:
-- `llama3-8b-8192` - 8B parameter model (recommended for development)
-- `llama3-70b-8192` - 70B parameter model (higher quality)
-- `mixtral-8x7b-32768` - Mixture-of-Experts model
-- `gemma-7b-it` - Google's efficient model
+### `src/llm/client.py` — HybridClient
 
-### 4. Configuration Management
-
-#### Environment Variables
-```bash
-# .env file
-LLM_PROVIDER=ollama        # or "groq"
-OLLAMA_HOST=http://host.docker.internal:11434
-OLLAMA_MODEL=mistral:7b
-GROQ_API_KEY=your_key_here
-GROQ_MODEL=llama3-8b-8192
-```
-
-#### Client Switching Logic
 ```python
-# src/llm/client.py
-from src.config import LLM_PROVIDER, OLLAMA_HOST, OLLAMA_MODEL, GROQ_API_KEY, GROQ_MODEL
+class HybridClient:
+    def __init__(self):
+        self.groq = GroqClient(GROQ_API_KEY, GROQ_MODEL) if GROQ_API_KEY else None
+        # OllamaClient communicates with local Ollama via OLLAMA_HOST
 
-def get_llm_client():
-    if LLM_PROVIDER == "groq" and GROQ_API_KEY:
-        return GroqClient(GROQ_API_KEY, GROQ_MODEL)
-    else:
-        return OllamaClient(OLLAMA_HOST, OLLAMA_MODEL)
+    async def stream(self, prompt: str) -> AsyncGenerator[str, None]:
+        if self.groq:
+            try:
+                async for chunk in self.groq.stream(prompt):
+                    yield chunk
+                return
+            except Exception as e:
+                logger.warning(f"Groq failed, falling back to Ollama: {e}")
+        # Fallback to Ollama
+        async for chunk in self.ollama.stream(prompt):
+            yield chunk
+
+hybrid_client = HybridClient()
+```
+
+### Usage Example
+
+```python
+from src.llm.client import hybrid_client
+
+async def generate_narrative(district: str, risk_score: float) -> str:
+    prompt = f"Generate a humanitarian situation report for {district} with risk score {risk_score:.2f}."
+    full_response = ""
+    async for chunk in hybrid_client.stream(prompt):
+        full_response += chunk
+    return full_response
+```
+
+## Development vs Production
+
+| Environment | `GROQ_API_KEY` | `OLLAMA_MODEL` | Behavior |
+|-------------|---------------|----------------|---------|
+| Development | Set | `mistral:7b` (small) | Groq primary, fast iteration |
+| Hybrid | Set | `qwen3:32b` | Groq primary, Ollama fallback |
+| Production | Empty | `qwen3:32b` | Ollama only, fully offline |
+
+### Development Setup
+
+```bash
+# Use Groq + small local model for development
+echo "GROQ_API_KEY=your_key" >> .env
+echo "GROQ_MODEL=llama3-8b-8192" >> .env
+echo "OLLAMA_MODEL=mistral:7b" >> .env
+```
+
+### Production Setup
+
+```bash
+# Offline mode — Ollama only
+echo "GROQ_API_KEY=" >> .env          # Empty = disabled
+echo "OLLAMA_MODEL=qwen3:32b" >> .env
 ```
 
 ## Security Considerations
 
-### 1. API Key Management
-- Store keys in environment variables only
-- Never commit keys to version control
-- Use `.env` with proper permissions (600)
-- Rotate keys regularly
+- **API Key** — Store only in `.env` with `chmod 600 .env`, never commit to git
+- **Data Privacy** — Groq is a cloud API; avoid sending personally identifiable or sensitive humanitarian data in production
+- **Rate Limits** — Free tier: ~100 RPM. The HybridClient falls back to Ollama on `429` errors
+- **Production** — Use Ollama only for fully offline, on-premise processing
 
-### 2. Data Privacy
-- **Local Processing**: Primary use should be local (Jetson constraints)
-- **Cloud Processing**: Only for development/testing
-- **Data Minimization**: Send only necessary context
-- **Compliance**: Ensure compliance with humanitarian data regulations
+## Testing
 
-### 3. Rate Limiting
-- Monitor usage to avoid exceeding free tier limits
-- Implement retry logic with backoff
-- Cache responses when possible
+```bash
+# Quick integration test
+python -c "
+import asyncio
+from src.llm.client import hybrid_client
 
-## Testing Strategy
+async def test():
+    result = ''
+    async for chunk in hybrid_client.stream('Say hello in one sentence.'):
+        result += chunk
+    print('Response:', result)
 
-### 1. Development Testing
-```python
-# test_groq_integration.py
-from src.llm.groq_client import GroqClient
-
-async def test_groq():
-    client = GroqClient("your_api_key", "llama3-8b-8192")
-    async for chunk in client.stream("Hello, how are you?"):
-        print(chunk, end="", flush=True)
-    print("\n✅ Groq integration test passed")
-
-if __name__ == "__main__":
-    asyncio.run(test_groq())
+asyncio.run(test())
+"
 ```
 
-### 2. Fallback Strategy
-```python
-# Enhanced client with fallback
-class HybridClient:
-    def __init__(self):
-        self.ollama_client = OllamaClient()
-        self.groq_client = GroqClient()
-        self.use_groq = bool(os.getenv("GROQ_API_KEY"))
-    
-    async def generate(self, prompt: str):
-        if self.use_groq:
-            try:
-                async for chunk in self.groq_client.stream(prompt):
-                    yield chunk
-            except Exception:
-                # Fallback to local model
-                async for chunk in self.ollama_client.stream(prompt):
-                    yield chunk
-        else:
-            async for chunk in self.ollama_client.stream(prompt):
-                yield chunk
-```
+## Guardrails
 
-## Production Deployment
+All LLM output (from both Groq and Ollama) passes through `src/llm/guardrails.py` before being returned by the API:
 
-### 1. Deployment Configuration
-```yaml
-# docker-compose.yml
-services:
-  backend:
-    environment:
-      - LLM_PROVIDER=ollama  # Production default
-      - GROQ_API_KEY=        # Empty for production
-    # ... other settings
-```
+- Rejects responses that combine low-risk language with famine terminology
+- Flags probability estimate mismatches against model predictions
+- Appends a mandatory verification disclaimer
 
-### 2. Development Configuration
-```yaml
-# docker-compose.dev.yml  
-services:
-  backend:
-    environment:
-      - LLM_PROVIDER=groq    # Development override
-      - GROQ_API_KEY=your_key
-    # ... other settings
-```
+## Troubleshooting
 
-## Cost Considerations
+| Issue | Resolution |
+|-------|-----------|
+| Groq returns `401` | Check `GROQ_API_KEY` in `.env`; verify key at console.groq.com |
+| Groq returns `429` | Rate limit exceeded; HybridClient falls back to Ollama |
+| Both Groq and Ollama fail | `/narrative/generate` returns a 503 error |
+| Slow responses | Switch to a smaller Groq model (`llama3-8b-8192`) |
+| Guardrails reject output | Check guardrails.py; adjust prompt or thresholds |
 
-### Free Tier Limits
-- **llama3-8b-8192**: 100,000 tokens/month
-- **llama3-70b-8192**: 50,000 tokens/month  
-- **mixtral-8x7b-32768**: 100,000 tokens/month
+## Cost Reference
 
-### Production Cost
-- **Local**: Zero cost (Jetson resources)
-- **Cloud**: $0.0001-0.0005 per token (varies by model)
-- **Hybrid**: Optimal balance of cost and performance
+| Model | Input | Output |
+|-------|-------|--------|
+| `llama3-8b-8192` | ~$0.05 / 1M tokens | ~$0.08 / 1M tokens |
+| `llama3-70b-8192` | ~$0.59 / 1M tokens | ~$0.79 / 1M tokens |
+| Free tier | ~100 RPM, 6000 RPD | — |
 
-## Best Practices
-
-### 1. Development Workflow
-1. **Use Groq for development** - Faster iteration
-2. **Use local Ollama for production** - Secure, offline processing
-3. **Maintain same interface** - Same API for both clients
-
-### 2. Error Handling
-```python
-try:
-    response = await client.stream(prompt)
-    # Process response
-except httpx.RequestError as e:
-    # Handle network issues
-    logger.warning(f"Groq API error: {e}")
-    # Fallback to local processing
-except Exception as e:
-    # Handle other errors
-    logger.error(f"Unexpected error: {e}")
-```
-
-### 3. Monitoring
-- Track API usage
-- Monitor response times
-- Log fallback events
-- Performance comparison between models
-
-## Migration Path
-
-### Phase 1: Development
-- Configure Groq integration
-- Test with development data
-- Validate output quality
-
-### Phase 2: Hybrid
-- Use Groq for development
-- Use local for production
-- Monitor performance differences
-
-### Phase 3: Production
-- Switch to local processing (Jetson constraints)
-- Use Groq only for testing/evaluation
-- Maintain both implementations for flexibility
-
-## Conclusion
-
-The Groq integration approach provides flexibility for development while maintaining the secure, local processing required for production deployment on Jetson platforms. The hybrid approach ensures that development teams can leverage Groq's performance benefits while production systems maintain the security and offline capabilities needed for humanitarian applications.
+*Rates as of 2025. Check https://groq.com/pricing for current pricing.*

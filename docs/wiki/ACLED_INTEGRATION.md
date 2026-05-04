@@ -2,212 +2,135 @@
 
 ## Overview
 
-FamineSight integrates with the ACLED (Armed Conflict Location and Event Data) API to obtain conflict data for Somalia. This document details the authentication process and integration specifics.
+FamineSight integrates with the ACLED (Armed Conflict Location and Event Data) API to obtain conflict data for Somalia. ACLED data covers conflict events, fatalities, and civilian targeting events from 2010 to present, aggregated at the district-month level for use in the prediction pipeline.
 
-## Authentication Process
+## Authentication
+
+### Credentials
+
+ACLED uses **OAuth 2.0 with Password Grant**. Authentication is based on your ACLED account email and password — no separate API key is issued.
+
+Configure in `.env`:
+```bash
+ACLED_EMAIL=your_email@organization.org
+ACLED_PASSWORD=your_acled_password
+```
 
 ### OAuth 2.0 Flow
 
-FamineSight uses the OAuth 2.0 authentication method required by ACLED:
+1. **Token Retrieval** — POST to `https://acleddata.com/oauth/token`:
+   ```http
+   POST https://acleddata.com/oauth/token
+   Content-Type: application/x-www-form-urlencoded
 
-1. **Token Retrieval**: 
-   - POST to `https://acleddata.com/oauth/token`
-   - Parameters required:
-     - `username`: Your ACLED email
-     - `password`: Your ACLED password  
-     - `grant_type`: "password"
-     - `client_id`: "acled"
-     - `scope`: "authenticated"
+   username=your_email&password=your_password&grant_type=password&client_id=acled&scope=authenticated
+   ```
 
-2. **Token Usage**:
-   - Include token in Authorization header: `Bearer <token>`
-   - Token valid for 24 hours
-   - Automatic refresh on 401 errors
+2. **Token Usage** — Include in the `Authorization` header:
+   ```http
+   GET https://acleddata.com/api/acled/read?country=Somalia&year=2010:2024
+   Authorization: Bearer <token>
+   ```
 
-## Environment Configuration
+3. **Token Lifetime** — Valid for 24 hours; automatically refreshed on `401` responses.
 
-### Required Variables
+## Data Fetched
 
-Add the following to your `.env` file:
+### API Endpoint
+- **Base URL:** `https://acleddata.com/api/acled/read`
+- **Country:** Somalia
+- **Date range:** `2010-01-01` to `2024-12-31` (configurable via `DATA_START_DATE` / `DATA_END_DATE` in `config.py`)
+- **Pagination:** 500 records per page, automatically paginated
+
+### Response Fields Used
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `event_date` | string | Event date (parsed to datetime) |
+| `event_type` | string | Type of conflict event |
+| `admin1` | string | Region |
+| `admin2` | string | District |
+| `latitude` | float | Event latitude |
+| `longitude` | float | Event longitude |
+| `fatalities` | int | Number of fatalities |
+| `civilian_targeting` | string | Civilian targeting flag |
+
+### Aggregated Output
+
+The fetcher aggregates to **district × month** level, producing:
+- `conflict_events` — Total event count
+- `conflict_fatalities` — Total fatalities
+- `civilian_targeting_events` — Events explicitly targeting civilians
+
+Raw output saved to: `data/raw/acled/somalia_acled_raw.csv`
+
+## Implementation Details
+
+### `src/data/acled_fetcher.py`
+
+Key functions:
+- `get_acled_token()` — Retrieves OAuth token; caches in memory; refreshes on expiry
+- `fetch_acled_data()` — Paginates through all results with exponential-backoff retry
+- `process_acled_data(df)` — Cleans, filters, and aggregates to district-month
+
+### Error Handling
+
+| HTTP Status | Behavior |
+|-------------|---------|
+| `401 Unauthorized` | Refreshes token and retries |
+| `429 Too Many Requests` | Exponential backoff: `2^page` seconds, max 5 retries |
+| `5xx Server Errors` | Retry with backoff |
+| Any failure | Falls back to synthetic conflict data |
+
+### Testing Authentication
 
 ```bash
-ACLED_EMAIL=your_email@organization.org
-ACLED_PASSWORD=your_secure_password
-```
-
-### Credential Security
-
-- Credentials are stored in environment variables
-- Never commit credentials to version control
-- Use `.env` file with appropriate permissions (600)
-
-## API Endpoints
-
-### Main Data Endpoint
-- **URL**: `https://acleddata.com/acled/read`
-- **Method**: GET
-- **Parameters**:
-  - `country`: "Somalia"
-  - `year`: "2010:2024" (historical range)
-  - `limit`: 500 (maximum per page)
-  - `page`: Pagination parameter
-
-### Response Format
-The API returns JSON with a `data` array containing event records with fields:
-- `event_date`
-- `event_type`
-- `sub_event_type` 
-- `actor1`
-- `admin1` (region)
-- `admin2` (district)
-- `latitude`
-- `longitude`
-- `fatalities`
-- `civilian_targeting`
-
-## Data Processing
-
-### Fetching Logic
-1. **Authentication**: Get OAuth token
-2. **Pagination**: Automatically handle multiple pages
-3. **Rate Limiting**: Exponential backoff on 429 errors
-4. **Error Handling**: Graceful fallback to synthetic data
-
-### Data Cleaning
-1. Parse `event_date` to datetime
-2. Convert `fatalities` to integer
-3. Extract `civilian_targeting` boolean
-4. Filter invalid records
-5. Aggregate to district-month level
-
-## Error Handling
-
-### Common Error Codes
-- **401 Unauthorized**: Invalid credentials or token expired
-- **429 Too Many Requests**: Rate limiting, implements exponential backoff
-- **5xx Server Errors**: Temporary service issues, implements retry logic
-
-### Fallback Mechanism
-When API access fails:
-1. System automatically falls back to synthetic data
-2. All existing functionality continues
-3. No interruption to system operation
-
-## Rate Limiting
-
-### Implementation
-- **Exponential Backoff**: 2^page seconds between retries
-- **Maximum Retries**: 5 attempts
-- **Automatic Token Refresh**: On 401 errors
-- **Graceful Degradation**: Continue with cached data when possible
-
-## Testing Authentication
-
-### Test Script
-```python
-# test_acled_auth.py
+python -c "
 from src.data.acled_fetcher import get_acled_token
-
-def test_authentication():
-    token = get_acled_token()
-    if token:
-        print("✅ ACLED authentication successful")
-        print(f"Token length: {len(token)}")
-        return True
-    else:
-        print("❌ ACLED authentication failed")
-        return False
-
-if __name__ == "__main__":
-    test_authentication()
+token = get_acled_token()
+print('Auth OK:', bool(token))
+print('Token length:', len(token) if token else 0)
+"
 ```
 
-## Security Considerations
+Or run the full fetch:
+```bash
+python scripts/fetch_data.py
+```
 
-### Credential Protection
-- Store credentials in `.env` file
-- Set proper file permissions (600)
-- Never log credentials
-- Use environment variable expansion only
+## Manual Download (Fallback)
 
-### Token Security
-- Tokens are cached in memory
-- No persistent storage of tokens
-- Automatic refresh on expiration
-- Secure handling of authentication flow
+If API access is unavailable:
 
-### Data Security
-- All processing done locally
-- No external data transmission
-- Secure API communication (HTTPS)
-- Proper error handling to prevent credential leaks
+1. Visit https://acleddata.com/data-export-tool/
+2. Filter: **Region** → Africa → **Country** → Somalia
+3. **Date range:** January 1, 2010 → Present
+4. Leave **Event Types** blank (all types)
+5. Export as CSV
+6. Save to: `data/raw/acled/somalia_acled_raw.csv`
+
+The preprocessor will pick up the manual CSV automatically.
+
+## Security
+
+- Credentials stored exclusively in `.env` (never in code)
+- Set `.env` permissions: `chmod 600 .env`
+- Tokens are held in memory only — never written to disk
+- All ACLED API communication is over HTTPS
 
 ## Troubleshooting
 
-### Common Issues
+| Issue | Resolution |
+|-------|-----------|
+| `401 Unauthorized` | Verify `ACLED_EMAIL` and `ACLED_PASSWORD` in `.env` |
+| `429 Too Many Requests` | Automatic backoff is implemented; wait and retry |
+| Empty CSV output | Check date range; verify account has API access enabled |
+| Token not refreshing | Restart the script; token cache is in-memory per process |
 
-1. **Authentication Failure**
-   - Verify email and password
-   - Check ACLED account status
-   - Ensure account has API access
-
-2. **Rate Limiting**
-   - System implements automatic backoff
-   - No manual intervention needed
-   - Continue with synthetic data if rate limited
-
-3. **Network Issues**
-   - Verify internet connectivity
-   - Check firewall settings
-   - Ensure proper DNS resolution
-
-### Debugging Tips
-
-1. **Check Environment Variables**
 ```bash
+# Debug: test token retrieval
+python -c "from src.data.acled_fetcher import get_acled_token; print(get_acled_token())"
+
+# Debug: check env vars
 grep ACLED .env
 ```
-
-2. **Test Token Retrieval**
-```bash
-python -c "from src.data.acled_fetcher import get_acled_token; print(get_acled_token())"
-```
-
-3. **Verify API Access**
-```bash
-curl -G \
-  --data-urlencode "username=your_email" \
-  --data-urlencode "password=your_password" \
-  --data-urlencode "grant_type=password" \
-  --data-urlencode "client_id=acled" \
-  --data-urlencode "scope=authenticated" \
-  https://acleddata.com/oauth/token
-```
-
-## Integration Best Practices
-
-### Production Use
-1. **Secure Credential Storage**: Use environment variables only
-2. **Error Monitoring**: Log authentication failures
-3. **Fallback Testing**: Regularly test synthetic data fallback
-4. **Token Management**: Monitor token expiration
-
-### Development
-1. **Use Synthetic Data**: Default to synthetic for development
-2. **API Testing**: Test authentication separately
-3. **Rate Limiting**: Understand API limits
-4. **Data Validation**: Verify data quality after fetching
-
-## Version Compatibility
-
-### API Version
-- Uses ACLED's current REST API
-- OAuth 2.0 authentication
-- JSON response format
-- Standard HTTP status codes
-
-### Client Version
-- Python requests library for API calls
-- Automatic retry logic
-- Error handling and logging
-- Token caching for efficiency

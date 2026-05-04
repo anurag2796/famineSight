@@ -1,36 +1,74 @@
-# FamineSight - ACLED Data Access Setup
+# FamineSight — ACLED Data Access Setup
 
-To enable real ACLED data access, please create a `.env` file in the project root with your ACLED API credentials:
+FamineSight uses ACLED (Armed Conflict Location & Event Data) as its primary conflict data source. This document covers how to obtain credentials and configure the system to fetch real ACLED data.
+
+## Step 1: Register with ACLED
+
+1. Visit https://acleddata.com/ and create a free account.
+2. Once registered, your **email** and **account password** serve as API credentials.
+3. No separate API key is issued — authentication uses your email + password via OAuth 2.0.
+
+## Step 2: Configure Your `.env` File
+
+Create a `.env` file in the project root (copy from `.env.example`):
 
 ```bash
-# Create the .env file
-echo "ACLED_API_KEY=your_actual_api_key_here" > .env
-echo "ACLED_EMAIL=your_actual_email_here" >> .env
-echo "OLLAMA_HOST=http://host.docker.internal:11434" >> .env
-echo "OLLAMA_MODEL=qwen3:32b" >> .env
-echo "RF_N_JOBS=4" >> .env
-echo "XGB_DEVICE=cpu" >> .env
+cp .env.example .env
 ```
 
-## Before Using Real ACLED Data
-
-1. Obtain your ACLED API key from https://acleddata.com/
-2. Register for an account if you haven't already
-3. Once you have your credentials, replace the placeholder values in the `.env` file
-4. Verify the credentials work by running:
+Then add your ACLED credentials:
 
 ```bash
+# ACLED Credentials
+ACLED_EMAIL=your_email@example.com
+ACLED_PASSWORD=your_acled_password
+
+# LLM Configuration
+OLLAMA_HOST=http://host.docker.internal:11434
+OLLAMA_MODEL=qwen3:32b
+GROQ_API_KEY=                         # Optional — leave empty for Ollama-only mode
+GROQ_MODEL=llama3-8b-8192
+
+# API Security (required)
+API_KEY=replace_with_a_strong_random_key
+
+# Hardware tuning
+RF_N_JOBS=4
+XGB_DEVICE=cpu
+```
+
+Generate a secure `API_KEY`:
+```bash
+python -c "import secrets; print(secrets.token_hex(32))"
+```
+
+## Step 3: Verify the Connection
+
+```bash
+python -c "
+from src.data.acled_fetcher import get_acled_token
+token = get_acled_token()
+print('Auth OK:', bool(token))
+"
+```
+
+## Step 4: Fetch Data
+
+```bash
+# Fetch all data (will use ACLED credentials from .env)
 python scripts/fetch_data.py
+
+# Force synthetic data (no credentials required)
+python scripts/fetch_data.py --synthetic
 ```
 
-This will attempt to fetch real data. If credentials are correct, it will fetch real ACLED data; otherwise, it will fall back to synthetic data.
+If credentials are correct, real ACLED data is downloaded to `data/raw/acled/`. If authentication fails, the system automatically falls back to synthetic data and continues operating normally.
 
-## Verification
+## Troubleshooting
 
-After creating the `.env` file, you can verify it works by running:
-
-```bash
-python -c "from src.config import ACLED_API_KEY, ACLED_EMAIL; print('API Key set:', bool(ACLED_API_KEY)); print('Email set:', bool(ACLED_EMAIL))"
-```
-
-The system will automatically fall back to synthetic data if real data fetching fails, ensuring continuous operation.
+| Issue | Resolution |
+|-------|-----------|
+| `401 Unauthorized` | Verify `ACLED_EMAIL` and `ACLED_PASSWORD` in `.env` |
+| `429 Too Many Requests` | The fetcher has automatic exponential-backoff retry — wait and retry |
+| `API_KEY not set` error | Generate a key and add `API_KEY=...` to `.env` |
+| Module import errors | Ensure you're running from the project root with the venv activated |

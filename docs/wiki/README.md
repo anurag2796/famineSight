@@ -2,240 +2,205 @@
 
 ## Overview
 
-FamineSight is a comprehensive humanitarian data mining system designed to predict hunger-related mortality in Somalia. The system integrates multiple data sources and employs advanced analytics to provide early warning capabilities for humanitarian response teams.
+FamineSight is a comprehensive humanitarian data mining system designed to predict hunger-related mortality in Somalia. The system integrates nine data sources and employs advanced analytics to provide early warning capabilities for humanitarian response teams.
 
 ## System Architecture
 
 ```
-FamineSight/
-├── CLAUDE.md                 # Project specification and instructions
-├── docker-compose.yml        # Docker orchestration
-├── .env                      # Environment variables
+famineSight/
 ├── .env.example              # Example environment variables
-├── .dockerignore             # Docker ignore patterns
 ├── README.md                 # Project overview
+├── docker-compose.dev.yml    # Docker orchestration (development)
+├── pytest.ini                # Test configuration
 ├── data/
-│   ├── raw/                  # Raw data files
-│   ├── processed/            # Processed data files
-│   └── synthetic/            # Synthetic data generation scripts
-├── notebooks/                # Jupyter notebooks for analysis
-├── src/                      # Source code
-│   ├── __init__.py
-│   ├── config.py             # Configuration management
-│   ├── data/                 # Data fetching and preprocessing
-│   ├── analysis/             # Analytical modules
-│   └── llm/                  # Large Language Model integration
-├── backend/                  # FastAPI backend
-│   ├── Dockerfile            # Backend Docker configuration
-│   ├── requirements.txt      # Python dependencies
-│   ├── main.py               # Main application
-│   ├── routers/              # API route handlers
-│   ├── schemas/              # Data models
-│   ├── services/             # Business logic
-│   └── tests/                # Test suite
-├── frontend/                 # Streamlit frontend
-│   ├── Dockerfile            # Frontend Docker configuration
-│   ├── requirements.txt      # Python dependencies
-│   └── app.py                # Main application
-├── models/                   # Trained models
+│   ├── raw/                  # Downloaded raw data files
+│   └── processed/            # Preprocessed pipeline output
+├── models/                   # Trained model artifacts (.pkl)
+├── notebooks/                # Jupyter notebooks for EDA
 ├── scripts/                  # Utility scripts
-└── docs/                     # Documentation
-    └── wiki/                 # Wiki documentation
+│   ├── audit.py              # Data audit / quality checks
+│   ├── fetch_data.py         # Orchestrate full data fetch
+│   ├── generate_notebooks.py # Auto-generate EDA notebooks
+│   ├── generate_report_pdf.py# LaTeX report builder
+│   └── train_pipeline.py     # Train all ML models
+├── src/                      # Core source code
+│   ├── config.py             # Centralized configuration
+│   ├── data/
+│   │   ├── acled_fetcher.py      # ACLED OAuth + conflict data
+│   │   ├── chirps_fetcher.py     # CHIRPS rainfall data
+│   │   ├── fsnau_fetcher.py      # FSNAU mortality data
+│   │   ├── ipc_fetcher.py        # IPC food security phases
+│   │   ├── ndvi_fetcher.py       # NDVI vegetation index
+│   │   ├── preprocessor.py       # Full data merge & feature pipeline
+│   │   ├── shapefile_fetcher.py  # OCHA district shapefiles
+│   │   ├── unhcr_fetcher.py      # UNHCR displacement data
+│   │   └── wfp_fetcher.py        # WFP food price data
+│   ├── analysis/
+│   │   ├── anomaly.py            # Isolation Forest, LOF, Z-score
+│   │   ├── association.py        # FP-Growth & Apriori rule mining
+│   │   ├── classification.py     # Random Forest & XGBoost
+│   │   ├── clustering.py         # K-Means & HDBSCAN
+│   │   ├── extra_models.py       # Additional model experiments
+│   │   └── viz_payload.py        # Visualization data builders
+│   └── llm/
+│       ├── client.py             # Hybrid Ollama/Groq client
+│       ├── groq_client.py        # Groq API client
+│       ├── guardrails.py         # AI output validation
+│       └── prompts.py            # Prompt templates
+├── backend/                  # FastAPI backend
+│   ├── Dockerfile
+│   ├── main.py               # App entry point + CORS + API key auth
+│   ├── requirements.txt
+│   ├── security.py           # X-API-Key header auth
+│   ├── routers/
+│   │   ├── analyze.py        # GET /analyze/rules, /analyze/clusters
+│   │   ├── anomaly.py        # GET /anomaly/alerts
+│   │   ├── narrative.py      # POST /narrative/generate
+│   │   └── predict.py        # POST /predict/mortality
+│   ├── schemas/              # Pydantic v2 request/response models
+│   └── services/
+│       ├── inference.py      # Model inference helpers
+│       └── model_registry.py # Loads & caches trained model artifacts
+├── frontend/
+│   ├── Dockerfile
+│   ├── app.py                # Streamlit dashboard
+│   └── requirements.txt
+├── docs/
+│   ├── DATA_SOURCING.md
+│   ├── README_ACLED_SETUP.md
+│   ├── USAGE_INSTRUCTIONS.md
+│   └── wiki/
+│       ├── ACLED_INTEGRATION.md
+│       ├── DEPLOYMENT.md
+│       ├── DEVELOPER_GUIDE.md
+│       ├── GROQ_INTEGRATION.md
+│       └── README.md         # (this file)
+└── report/                   # Academic report (LaTeX source + PDF)
 ```
 
 ## Key Features
 
-### 1. Data Integration
-- ACLED API integration with OAuth authentication
-- WFP food price data fetching
-- Synthetic data generation for testing
-- Multi-source data fusion
+### 1. Data Integration (9 Sources)
+- **ACLED** — Conflict events, fatalities, civilian targeting (OAuth auth)
+- **IPC** — Food security phase percentages (AFI Phases 1–5)
+- **WFP** — Food price indices (auto-fetched via HDX)
+- **CHIRPS** — Monthly rainfall data (auto-fetched via HDX)
+- **NDVI** — Vegetation health index (auto-fetched via HDX)
+- **UNHCR** — Internally displaced persons and refugee counts
+- **FSNAU** — Crude death rate & under-5 death rate (supplementary)
+- **OCHA COD-AB** — Somalia district shapefiles and p-codes (92 districts)
 
 ### 2. Analytical Capabilities
-- Association rule mining (FP-Growth, Apriori)
-- Clustering analysis (K-Means, DBSCAN)
-- Machine learning classification (Random Forest, XGBoost)
-- Anomaly detection (Isolation Forest, LOF)
-- LLM-based narrative generation
+- **Association rule mining** — FP-Growth and Apriori algorithms
+- **Clustering** — K-Means (k=4), HDBSCAN density-based clustering
+- **Classification** — Random Forest with SMOTE, XGBoost (CPU-optimized)
+- **Anomaly detection** — Isolation Forest, Local Outlier Factor, Z-score
+- **LLM narratives** — AI-generated situation reports with guardrails
 
-### 3. Platform Optimization
-- ARM64/Jetson AGX Orin optimized
-- Memory-safe configurations
-- Docker-based deployment
-- Real-time processing capabilities
+### 3. Platform Features
+- ARM64 / Jetson AGX Orin optimized (`RF_N_JOBS=4`, `XGB_DEVICE=cpu`)
+- Docker-based deployment with health checks
+- API key authentication on all endpoints
+- Synthetic data fallback for any unavailable source
 
 ## Getting Started
 
 ### Prerequisites
 - Python 3.11+
-- Docker and Docker Compose
-- Jetson AGX Orin with sufficient RAM (60+ GB)
-- Qwen3:32b LLM (via Ollama)
+- Docker and Docker Compose v2
+- ACLED credentials (free registration at acleddata.com)
+- Generated `API_KEY` (`python -c "import secrets; print(secrets.token_hex(32))"`)
 
-### Installation
+### Quick Start
 
-1. **Clone the repository**
 ```bash
+# 1. Clone
 git clone <repository-url>
-cd faminesight
-```
+cd famineSight
 
-2. **Set up environment variables**
-```bash
-# Copy example file and add your credentials
+# 2. Configure
 cp .env.example .env
-# Edit .env to add your ACLED credentials
+# Edit .env: set ACLED_EMAIL, ACLED_PASSWORD, API_KEY
+
+# 3. Fetch data
+python scripts/fetch_data.py
+
+# 4. Train models
+python scripts/train_pipeline.py
+
+# 5. Start services
+docker compose -f docker-compose.dev.yml up --build
+
+# 6. Verify
+curl -H "X-API-Key: your_api_key" http://localhost:8000/health
 ```
 
-3. **Install dependencies**
-```bash
-pip install -r backend/requirements.txt
-pip install -r frontend/requirements.txt
-```
+## API Endpoints
 
-4. **Start the system**
-```bash
-docker compose up --build
-```
+All endpoints require the `X-API-Key` header.
 
-## ACLED API Integration
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Backend health check |
+| `POST` | `/predict/mortality` | Crisis label + mortality risk prediction |
+| `GET` | `/analyze/rules` | Association rules |
+| `GET` | `/analyze/clusters` | K-Means district cluster profiles |
+| `GET` | `/anomaly/alerts` | Anomaly detection alerts |
+| `POST` | `/narrative/generate` | AI-generated situation report |
 
-### Authentication Process
-FamineSight uses OAuth 2.0 authentication with the ACLED API:
-
-1. **Get OAuth Token**:
-   - POST to `https://acleddata.com/oauth/token`
-   - Parameters: username (email), password, grant_type="password", client_id="acled", scope="authenticated"
-
-2. **Use Token**:
-   - Include in headers: `Authorization: Bearer <token>`
-   - Token valid for 24 hours
-
-3. **Token Refresh**:
-   - Automatically refreshes on 401 errors
-   - Handles token expiration gracefully
-
-### Environment Setup
-```bash
-# In .env file
-ACLED_EMAIL=your_email@organization.org
-ACLED_PASSWORD=your_secure_password
-```
-
-## Data Pipeline
-
-### Data Sources
-1. **ACLED Conflict Data**: Somalia conflict events (2010-2024)
-2. **WFP Food Prices**: Food price indices for Somalia
-3. **CHIRPS Rainfall**: Climate data for Somalia
-4. **FSNAU Mortality**: Famine-related mortality data
-5. **IPC Phases**: Integrated Food Security Phase classification
-
-### Processing Steps
-1. **Data Fetching**: Real data or synthetic fallback
-2. **Preprocessing**: Merging, imputation, scaling
-3. **Feature Engineering**: Lag features, rolling statistics
-4. **Dimensionality Reduction**: PCA for efficient processing
-5. **Temporal Sorting**: Ensures chronological data flow
+Interactive API docs: http://localhost:8000/docs
 
 ## Model Architecture
 
 ### Classification Models
-- **Random Forest**: Ensemble method with SMOTE for class balancing
-- **XGBoost**: Gradient boosting with CPU optimization for ARM64
+- **Random Forest** — Ensemble method with SMOTE for class balancing; temporal train/val/test split
+- **XGBoost** — Gradient boosting with `tree_method="hist"` and `device="cpu"` for ARM64
 
 ### Clustering
-- **K-Means**: 4-cluster analysis for district vulnerability profiles
-- **DBSCAN**: Density-based clustering for conflict epicenters
+- **K-Means** — 4-cluster analysis for district vulnerability profiling
+- **HDBSCAN** — Density-based clustering for identifying conflict epicenters
 
 ### Anomaly Detection
-- **Isolation Forest**: Tree-based anomaly detection
-- **Local Outlier Factor**: Density-based anomaly detection
-- **Z-Score Analysis**: Statistical anomaly detection
+- **Isolation Forest** — Tree-based anomaly scoring
+- **Local Outlier Factor** — Density-based anomaly scoring
+- **Z-Score Analysis** — Statistical threshold-based alerts
 
-## API Endpoints
+## Environment Variables Reference
 
-### Prediction
-- `POST /predict/mortality` - Predict mortality risk for a district
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `API_KEY` | ✅ | — | Backend API authentication key |
+| `ACLED_EMAIL` | ✅* | — | ACLED account email |
+| `ACLED_PASSWORD` | ✅* | — | ACLED account password |
+| `OLLAMA_HOST` | — | `http://host.docker.internal:11434` | Ollama endpoint |
+| `OLLAMA_MODEL` | — | `qwen3:32b` | Ollama model |
+| `GROQ_API_KEY` | — | *(empty)* | Groq API key (optional) |
+| `GROQ_MODEL` | — | `llama3-8b-8192` | Groq model |
+| `RF_N_JOBS` | — | `4` | RF parallelism (cap at 4 for Jetson) |
+| `XGB_DEVICE` | — | `cpu` | XGBoost device |
+| `ALLOWED_ORIGINS` | — | `http://localhost:8501,...` | CORS origins |
 
-### Analysis
-- `GET /analyze/rules` - Get association rules
-- `GET /analyze/clusters` - Get cluster profiles
-
-### Anomaly Detection
-- `GET /anomaly/alerts` - Get anomaly alerts
-
-### Narrative Generation
-- `POST /narrative/generate` - Generate AI situation report
-
-## Deployment
-
-### Docker Configuration
-The system uses Docker Compose for deployment:
-
-1. **Backend Service**: FastAPI API server
-2. **Frontend Service**: Streamlit dashboard
-3. **Networking**: Proper host-gateway mapping for Ollama connectivity
-
-### Resource Requirements
-- **CPU**: 12+ cores (Jetson AGX Orin)
-- **Memory**: 60+ GB RAM (shared with GPU)
-- **Storage**: 50-70 GB SSD
-- **GPU**: Jetson AGX Orin 64GB
-
-## Development Guidelines
-
-### Code Structure
-- Modular design with clear separation of concerns
-- Configuration-driven approach
-- Comprehensive error handling
-- Logging for debugging and monitoring
-
-### Jetson Optimization
-- `RF_N_JOBS=4` to prevent OOM
-- `XGB_DEVICE="cpu"` for ARM64 compatibility
-- GDAL system dependencies in Dockerfile
-- All constraints documented in CLAUDE.md
-
-### Testing
-- Unit tests for each module
-- Integration tests for data pipeline
-- End-to-end tests for API
-- Synthetic data for testing without real API access
+*Required for real ACLED data; system falls back to synthetic data without them.
 
 ## Troubleshooting
 
-### Common Issues
-1. **API Authentication**: Check credentials in `.env`
-2. **Docker Build**: Ensure GDAL dependencies are installed
-3. **Memory Issues**: Verify `RF_N_JOBS=4` setting
-4. **LLM Connectivity**: Ensure Ollama is running on host
+| Issue | Resolution |
+|-------|-----------|
+| `API_KEY not set` | Add `API_KEY=...` to `.env` |
+| ACLED `401` | Verify `ACLED_EMAIL` / `ACLED_PASSWORD` |
+| Ollama unreachable | Run `ollama list` on host; check `OLLAMA_HOST` |
+| OOM on Jetson | Ensure `RF_N_JOBS=4` and `XGB_DEVICE=cpu` |
+| Docker build fails | `docker system prune -f && docker compose build --no-cache` |
 
-### Debugging
-- Check logs in Docker containers
-- Use `docker compose logs` for detailed error information
-- Verify environment variables are loaded correctly
-- Test individual components separately
+## Further Reading
 
-## Contributing
-
-### Code Style
-- Follow PEP 8 conventions
-- Use type hints
-- Include docstrings for all functions
-- Write comprehensive tests
-
-### Development Process
-1. Fork the repository
-2. Create feature branch
-3. Make changes
-4. Write tests
-5. Submit pull request
+- [ACLED Integration](ACLED_INTEGRATION.md) — OAuth flow details and troubleshooting
+- [Groq Integration](GROQ_INTEGRATION.md) — Hybrid LLM architecture
+- [Developer Guide](DEVELOPER_GUIDE.md) — Module-level docs and code patterns
+- [Deployment Guide](DEPLOYMENT.md) — Production & Jetson deployment steps
+- [Data Sourcing](../DATA_SOURCING.md) — Per-source download instructions
+- [ACLED Setup](../README_ACLED_SETUP.md) — Quick credential setup guide
 
 ## License
 
-MIT License - see LICENSE file for details.
-
-## Support
-
-For support, please contact the development team or open an issue in the repository.
+This project is for humanitarian and academic purposes only. Unauthorized commercial use is strictly prohibited.
